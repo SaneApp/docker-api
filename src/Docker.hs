@@ -1,32 +1,33 @@
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
 module Docker where
-import API (APIClient(..), ClientSettings(..), jsonize)
 import Control.Monad.Reader
 import Control.Monad.Trans
+import Data.Aeson
+import Data.Conduit
 import URI.TH
 import URI.Types
+import Data.Aeson (Object)
 import Data.Default
 import Data.ByteString.Char8 (pack)
+import qualified Data.ByteString.Char8 as BS
 import Data.ByteString.Lazy.Char8 (ByteString)
+import Data.Time.Clock
 import Docker.Types hiding (path)
 import Network.HTTP.Conduit
+import Network.HTTP.API hiding (get, put, post, delete)
 
-type Docker p r = (p -> p) -> DockerM r
+listContainers :: ListContainerOptions -> DockerM [ContainerSummary]
+listContainers opts = get [uri| /containers/json{?opts} |]
 
-listContainers :: Docker ListContainerOptions [ContainerSummary]
-listContainers f = get [uri| /containers/json{?opts} |]
-  where opts = f def
-
-{-
-createContainer :: NewContainer -> Docker CreatedContainerResponse
+createContainer :: NewContainer -> DockerM CreatedContainerResponse
 createContainer = post [uri| /containers/create |]
 
-inspectContainer :: ContainerId -> Docker ContainerInfo
+inspectContainer :: ContainerId -> DockerM ContainerInfo
 inspectContainer cid = get [uri| /containers/{cid}/json |]
 
-listRunningContainerProcesses :: ContainerId -> PsArgs -> Docker RunningProcesses
+listRunningContainerProcesses :: ContainerId -> ListRunningProcessOptions -> DockerM RunningProcesses
 listRunningContainerProcesses cid ps_args = get [uri| /containers/{cid}/top{?ps_args} |]
--}
 
 -- Custom client code since docker returns invalid json if no changes exist (docker case 2234)
 inspectFilesystemChanges :: ContainerId -> DockerM [FileSystemChange]
@@ -37,85 +38,79 @@ inspectFilesystemChanges cid = DockerM $ APIClient $ do
   if (responseBody resp == ("null" :: ByteString))
     then return []
     else fmap responseBody $ fromAPIClient $ jsonize resp
-{-
-exportContainer :: ContainerId -> Docker OutputStream
+
+exportContainer :: ContainerId -> DockerM ByteString
 exportContainer cid = get [uri| /containers/{cid}/export |]
--}
+
 startContainer :: ContainerId -> StartSettings -> DockerM ()
 startContainer cid = post [uri| /containers/{cid}/start |]
 
-stopContainer :: ContainerId -> Docker StopContainerOptions ()
-stopContainer cid f = post [uri| /containers/{cid}/stop{?opts} |] ()
-  where opts = f def
+stopContainer :: ContainerId -> StopContainerOptions -> DockerM ()
+stopContainer cid opts = post [uri| /containers/{cid}/stop{?opts} |] ()
 
-restartContainer :: ContainerId -> Docker RestartContainerOptions ()
-restartContainer cid f = post [uri| /containers/{cid}/restart{?opts} |] ()
-  where opts = f def
+restartContainer :: ContainerId -> RestartContainerOptions -> DockerM ()
+restartContainer cid opts = post [uri| /containers/{cid}/restart{?opts} |] ()
 
 killContainer :: ContainerId -> DockerM ()
 killContainer cid = post [uri| /containers/{cid}/kill |] ()
-{-
-attachContainer :: ContainerId -> Docker AttachOptions OutputStream
-attachContainer cid = 
--}
+
+attachContainer :: ContainerId -> AttachOptions -> DockerM ByteString
+attachContainer cid = error "foo"
+
 awaitContainerExit :: ContainerId -> DockerM StatusCodeResult
 awaitContainerExit cid = post [uri| /containers/{cid}/wait |] ()
-{-
-removeContainer :: ContainerId -> Docker RemoveOptions ()
-removeContainer cid f = delete [uri| /containers/{cid}{?opts} |]
-  where opts = f def
 
-copyFile :: ContainerId -> FilePath -> DockerM OutputStream
+removeContainer :: ContainerId -> RemoveContainerOptions -> DockerM ()
+removeContainer cid opts = delete [uri| /containers/{cid}{?opts} |]
+
+copyFile :: ContainerId -> FilePath -> DockerM ByteString
 copyFile cid = post [uri| /containers/{cid}/copy |]
--}
-listImages :: Docker ListImagesOptions [ImageInfo]
-listImages f = get [uri| /images/json{?opts} |]
-  where opts = f def
 
-createImage :: Docker CreateImageOptions CreationStatus
-createImage = post [uri| /images/create{?opts} |]
-{-
-insertFile :: ImageName -> InsertOptions -> Docker InsertionStatus
-insertFile = post [uri| /images/{name}/insert{?opts} |]
--}
+listImages :: ListImagesOptions -> DockerM [ImageInfo]
+listImages opts = get [uri| /images/json{?opts} |]
+
+-- createImage :: CreateImageOptions -> DockerM (Source (ResourceT IO) StatusUpdate)
+-- createImage opts = post' [uri| /images/create{?opts} |]
+
+-- insertFile :: ImageName -> InsertOptions -> DockerM (Source (ResourceT IO) StatusUpdate)
+-- insertFile name opts = post' [uri| /images/{name}/insert{?opts} |]
+
 inspectImage :: ImageName -> DockerM ImageInfo
 inspectImage name = get [uri| /images/{name}/json |]
 
 getImageHistory :: ImageName -> DockerM [HistoryInfo]
 getImageHistory name = get [uri| /images/{name}/history |]
-{-
-pushImage :: ImageName -> Docker PushOptions ()
-pushImage = post [uri| /images/{name}/push{?opts} |]
 
-tagImage :: ImageName -> TagOptions -> Docker ()
-tagImage = post [uri| /images/{name}/tag{?opts} |]
+-- pushImage :: ImageName -> PushOptions -> DockerM (Source (ResourceT IO) StatusUpdate)
+-- pushImage name opts = post' [uri| /images/{name}/push{?opts} |]
 
-removeImage :: ImageName -> Docker [DeletionInfo]
-removeImage = delete [uri| /images/{name} |]
+tagImage :: ImageName -> TagOptions -> DockerM ()
+tagImage name opts = post' [uri| /images/{name}/tag{?opts} |]
 
-searchImages :: SearchOptions -> Docker [SearchResult]
-searchImages = get [uri| /images/search{?opts} |]
+removeImage :: ImageName -> DockerM [DeletionInfo]
+removeImage name = delete [uri| /images/{name} |]
 
-buildImage :: InputStream -> BuildOptions -> Docker OutputStream
-buildImage = post [uri| /build |]
+searchImages :: SearchOptions -> DockerM [SearchResult]
+searchImages opts = get [uri| /images/search{?opts} |]
 
-checkAuthConfiguration :: Docker AuthInfo
+buildImage :: ByteString -> BuildOptions -> DockerM ByteString
+buildImage stream opts = post [uri| /build{?opts} |] stream
+
+checkAuthConfiguration :: AuthInfo -> DockerM Bool
 checkAuthConfiguration = post [uri| /auth |]
--}
+
 getSystemInformation :: DockerM SystemInfo
 getSystemInformation = get [uri| /info |]
 
 getDockerVersionInformation :: DockerM VersionInfo
 getDockerVersionInformation = get [uri| /version |]
-{-
-commitImageChanges :: CommitOptions -> Docker CommittedImage
-commitImageChanges = post [uri| /commit{?opts} |]
 
-getEvents :: UTCTime -> Docker [Event]
+commitImageChanges :: CommitOptions -> DockerM CommittedImage
+commitImageChanges opts = post' [uri| /commit{?opts} |]
+
+getEvents :: UTCTime -> DockerM [Event]
 getEvents t = get [uri| /events{?since} |]
-  where since = 
+  where since = t
 
-getEventStream :: Docker (Stream Event)
-getEventStream = get [uri| /events |]
-
--}
+-- getEventStream :: DockerM (Source (ResourceT IO) Event)
+-- getEventStream = get [uri| /events |]

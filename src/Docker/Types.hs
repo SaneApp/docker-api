@@ -281,10 +281,54 @@ instance ToTemplateValue CreateImageOptions AssociativeListElement where
     ]
 
 instance ToTemplateValue StopContainerOptions AssociativeListElement where
+  toTemplateValue x = mkAssoc x [ val "t" t ]
 
 instance ToTemplateValue RestartContainerOptions AssociativeListElement where
+  toTemplateValue x = mkAssoc x [ val "t" t ]
 
 instance ToTemplateValue ListImagesOptions AssociativeListElement where
+  toTemplateValue x = mkAssoc x [ val "all" all ]
+
+instance ToTemplateValue ListRunningProcessOptions AssociativeListElement where
+  toTemplateValue x = mkAssoc x
+    [ val "ps_args" psArgs
+    ]
+
+instance ToTemplateValue RemoveContainerOptions AssociativeListElement where
+  toTemplateValue x = mkAssoc x
+    [ val "v" removeVolumes
+    ]
+
+instance ToTemplateValue TagOptions AssociativeListElement where
+  toTemplateValue x = mkAssoc x
+    [ val' "repo" repo
+    , val "force" force
+    ]
+
+instance ToTemplateValue SearchOptions AssociativeListElement where
+  toTemplateValue x = mkAssoc x
+    [ val' "term" term
+    ]
+
+instance ToTemplateValue BuildOptions AssociativeListElement where
+  toTemplateValue x = mkAssoc x
+    [ val' "t" repoAndTag
+    , val "q" suppressVerboseOutput
+    , val "nocache" noCache
+    ]
+
+instance ToTemplateValue CommitOptions AssociativeListElement where
+  toTemplateValue x = mkAssoc x
+    [ val' "container" container
+    , val' "repo" repo
+    , val "tag" tag
+    , val "m" message
+    , val "author" author
+    , val "run" run
+    ]
+
+instance ToTemplateValue UTCTime SingleElement where
+  toTemplateValue = Single . show . (\x -> (round x) :: Int) . utcTimeToPOSIXSeconds
 
 instance ToTemplateValue Text SingleElement where
   toTemplateValue = Single . unpack
