@@ -1,6 +1,12 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving, TemplateHaskell, MultiParamTypeClasses, FlexibleContexts, Rank2Types, FunctionalDependencies, FlexibleInstances #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FunctionalDependencies #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE Rank2Types #-}
+{-# LANGUAGE TemplateHaskell #-}
 module Docker.Types where
-import qualified API as API
 import Control.Applicative
 import Control.Lens
 import Control.Lens.TH
@@ -8,17 +14,21 @@ import Data.ByteString.Char8 (pack)
 import Data.Char
 import Data.Default
 import Data.Maybe
+import Control.Monad.Reader
 import Control.Monad.Trans
 import Control.Lens.TH
 import Data.Aeson
 import Data.Aeson.TH
 import Data.Text (Text, unpack)
 import Data.Time
+import Data.Time.Clock.POSIX
 import Network.HTTP.Conduit
+import qualified Network.HTTP.API as API
 import Prelude hiding (all)
 import URI.TH
 import URI.Types
 
+runDocker :: String -> DockerM a -> IO (Either API.APIError a)
 runDocker uri = API.runAPIClient uri (\r -> r { responseTimeout = Nothing }) . fromDockerM
 
 type ContainerId = Text
@@ -28,15 +38,59 @@ val :: (ToTemplateValue l SingleElement) => String -> Getter s (Maybe l) -> s ->
 val str l x = maybe Nothing (\v -> Just (str, v)) mv
   where mv = fmap toTemplateValue (x ^. l)
 
+val' :: (ToTemplateValue l SingleElement) => String -> Getter s l -> s -> Maybe (String, TemplateValue SingleElement)
+val' str l x = Just (str, toTemplateValue (x ^. l))
+
+
 mkAssoc x = Associative . catMaybes . map ($ x)
 
 get :: FromJSON a => String -> DockerM a
 get = DockerM . fmap responseBody . API.get . pack
 post str = DockerM . fmap responseBody . API.post (pack str)
-delete str = DockerM . fmap responseBody . API.delete (pack str)
+
+delete :: FromJSON a => String -> DockerM a
+delete str = DockerM $ API.APIClient $ do
+  (API.ClientSettings req man middleware) <- ask
+  let r = middleware $ req { path = pack str, method = "DELETE" }
+  resp <- lift $ lift $ httpLbs r man
+  fmap responseBody $ API.fromAPIClient $ API.jsonize resp
+
+post' :: FromJSON a => String -> DockerM a
+post' str = DockerM $ API.APIClient $ do
+  (API.ClientSettings req man middleware) <- ask
+  let r = middleware $ req { path = pack str, method = "POST" }
+  resp <- lift $ lift $ httpLbs r man
+  fmap responseBody $ API.fromAPIClient $ API.jsonize resp
 
 newtype DockerM a = DockerM { fromDockerM :: API.APIClient a }
   deriving (Monad, MonadIO, Functor, Applicative)
+
+data NewContainer = NewContainer
+  { _ncHostname :: Text
+  , _ncUser :: Text
+  , _ncMemory :: Int
+  , _ncMemorySwap :: Int
+  , _ncAttachStdin :: Bool
+  , _ncAttachStdout :: Bool
+  , _ncAttachStderr :: Bool
+  , _ncPortSpecs :: Maybe Object
+  , _ncPrivileged :: Bool
+  , _ncTty :: Bool
+  , _ncOpenStdin :: Bool
+  , _ncStdinOnce :: Bool
+  , _ncEnv :: Maybe Object
+  , _ncCmd :: [Text]
+  , _ncDns :: Maybe Object
+  , _ncImage :: Text
+  , _ncVolumes :: Object
+  , _ncVolumesFrom :: Text
+  , _ncWorkingDir :: Text
+  } deriving (Show)
+
+data CreatedContainerResponse = CreatedContainerResponse
+  { _ccrId :: Text
+  , _ccrWarnings :: [Text]
+  } deriving (Show)
 
 data ListContainerOptions = ListContainerOptions
   { _lcoAll :: Maybe Bool
@@ -63,29 +117,28 @@ data ContainerSummary = ContainerSummary
   , _csSizeRootFs :: Int
   } deriving (Show)
 
-{-
 data ContainerConfig = ContainerConfig
   { _ccreqHostname :: Text
+  , _ccreqDomainName :: Text
   , _ccreqUser :: Text
   , _ccreqMemory :: Int
   , _ccreqMemorySwap :: Int
   , _ccreqAttachStdin :: Bool
   , _ccreqAttachStdout :: Bool
   , _ccreqAttachStderr :: Bool
-  , _ccreqPortSpecs :: Maybe ____
+  , _ccreqPortSpecs :: Maybe Object
   , _ccreqPrivileged :: Bool
   , _ccreqTty :: Bool
   , _ccreqOpenStdin :: Bool
   , _ccreqStdinOnce :: Bool
-  , _ccreqEnv :: Maybe ____
+  , _ccreqEnv :: Maybe Object
   , _ccreqCmd :: [Text]
-  , _ccreqDns :: Maybe ____
+  , _ccreqDns :: Maybe Object
   , _ccreqImage :: Text
-  , _ccreqVolumes :: ____
+  , _ccreqVolumes :: Object
   , _ccreqVolumesFrom :: Text
   , _ccreqWorkingDir :: Text
-  }
--}
+  } deriving (Show)
 
 data CreatedContainer = CreatedContainer
   { _ccrespId :: Text
@@ -97,32 +150,32 @@ data ContainerState = ContainerState
   , _csPid :: Int
   , _csExitCode :: Int
   , _csStartedAt :: UTCTime
+  , _csFinishedAt :: Maybe UTCTime
   , _csGhost :: Bool
   } deriving (Show)
 
-{-
 data NetworkSettings = NetworkSettings
-  { _nsIpAddress :: Text
-  , _nsIpPrefixLen :: Int
+  { _nsIPAddress :: Text
+  , _nsIPPrefixLen :: Int
   , _nsGateway :: Text
   , _nsBridge :: Text
-  , _nsPortMapping :: Maybe ____
-  }
+  , _nsPortMapping :: Maybe Object
+  , _nsPorts :: Maybe Object
+  } deriving (Show)
 
 data ContainerInfo = ContainerInfo
-  { _ciId :: Text
+  { _ciID :: Text
   , _ciCreated :: UTCTime
   , _ciPath :: Text
-  , _ciArgs :: Text
-  , _ciConfig :: ContainerConfig
+  , _ciArgs :: [Text]
+  -- , _ciConfig :: ContainerConfig
   , _ciState :: ContainerState
   , _ciImage :: Text
   , _ciNetworkSettings :: NetworkSettings
   , _ciSysInitPath :: Text
   , _ciResolvConfPath :: Text
-  , _ciVolumes :: ____
-  }
--}
+  , _ciVolumes :: Maybe Object
+  } deriving (Show)
 
 data RunningProcesses = RunningProcesses
   { _rpTitles :: [Text]
@@ -148,7 +201,7 @@ data CopyFile = CopyFile
   } deriving (Show)
 
 data ImageInfo = ImageInfo
-  { _iiRepository :: Text
+  { _iiRepository :: Maybe Text
   , _iiTag :: Text
   , _iiId :: Text
   , _iiCreated :: UTCTime
@@ -206,6 +259,97 @@ data StatusCodeResult = StatusCodeResult
   { _scrStatusCode :: Int
   } deriving (Show)
 
+data Event = Event
+  { _eStatus :: Text
+  , _eId :: Text
+  , _eFrom :: Text
+  , _eTime :: Int
+  } deriving (Show)
+
+data CommitOptions = CommitOptions
+  { _coContainer :: Text
+  , _coRepo :: Text
+  , _coMessage :: Maybe Text
+  , _coTag :: Maybe Text
+  , _coAuthor :: Maybe Text
+  , _coRun :: Maybe Text
+  } deriving (Show)
+
+data CommittedImage = CommittedImage
+  { _committedId :: Text
+  } deriving (Show)
+
+data PushOptions = PushOptions
+  { _pRegistry :: Maybe Text
+  } deriving (Show)
+
+data TagOptions = TagOptions
+  { _toRepo :: Text
+  , _toForce :: Maybe Bool
+  } deriving (Show)
+
+data SearchOptions = SearchOptions
+  { _soTerm :: Text
+  } deriving (Show)
+
+data SearchResult = SearchResult
+  { _srDescription :: Text
+  , _srIsOfficial :: Bool
+  , _srIsTrusted :: Bool
+  , _srName  :: Text
+  , _srStarCount :: Int
+  } deriving (Show)
+
+data AttachOptions = AttachOptions
+  { _aoLogs :: Bool
+  , _aoStream :: Bool
+  , _aoStdIn :: Bool
+  , _aoStdOut :: Bool
+  , _aoStdErr :: Bool
+  } deriving (Show)
+
+data InsertOptions = InsertOptions
+  { _ioPath :: Text
+  , _ioUrl :: Text
+  } deriving (Show)
+
+data BuildOptions = BuildOptions
+  { _boRepoAndTag :: Text
+  , _boSuppressVerboseOutput :: Maybe Bool
+  , _boNoCache :: Maybe Bool
+  } deriving (Show)
+
+data RemoveContainerOptions = RemoveContainerOptions
+  { _rcRemoveVolumes :: Maybe Bool
+  } deriving (Show)
+
+data ListRunningProcessOptions = ListRunningProcessOptions
+  { _lrpPsArgs :: Maybe Text
+  } deriving (Show)
+
+data StatusUpdate
+  = StatusUpdate
+    { _icStatus :: Text
+    , _icProgress :: Maybe Text
+    }
+  | ErrorStatus
+    { _icError :: Text
+    }
+  deriving (Show)
+
+data DeletionInfo
+  = Untagged Text
+  | Deleted Text
+  deriving (Show)
+
+data AuthInfo = AuthInfo
+  { _aiUsername :: Text
+  , _aiPassword :: Text
+  , _aiEmail :: Text
+  , _aiServerAddress :: Maybe Text
+  } deriving (Show)
+
+makeFields ''NewContainer
 makeFields ''StatusCodeResult
 makeFields ''ContainerPort
 makeFields ''ContainerSummary
@@ -225,9 +369,26 @@ makeFields ''ListImagesOptions
 makeFields ''CreateImageOptions
 makeFields ''StopContainerOptions
 makeFields ''RestartContainerOptions
+makeFields ''Event
+makeFields ''CommittedImage
+makeFields ''PushOptions
+makeFields ''TagOptions
+makeFields ''SearchOptions
+makeFields ''AttachOptions
+makeFields ''InsertOptions
+makeFields ''RemoveContainerOptions
+makeFields ''ListRunningProcessOptions
+makeFields ''ContainerConfig
+makeFields ''NetworkSettings
+makeFields ''ContainerInfo
+makeFields ''CreatedContainerResponse
+makeFields ''AuthInfo
+makeFields ''CommitOptions
+makeFields ''BuildOptions
 
 fmap concat $ mapM (deriveJSON defaultOptions { fieldLabelModifier = dropWhile (not . isUpper) })
-  [ ''StatusCodeResult
+  [ ''NewContainer
+  , ''StatusCodeResult
   , ''ContainerPort
   , ''ContainerSummary
   , ''CreatedContainer
@@ -237,10 +398,22 @@ fmap concat $ mapM (deriveJSON defaultOptions { fieldLabelModifier = dropWhile (
   , ''StartSettings
   , ''WaitResult
   , ''CopyFile
-  , ''ImageInfo
   , ''SystemInfo
   , ''VersionInfo
   , ''HistoryInfo
+  , ''Event
+  , ''CommittedImage
+  , ''ContainerConfig
+  , ''NetworkSettings
+  , ''ContainerInfo
+  , ''CreatedContainerResponse
+  , ''DeletionInfo
+  , ''AuthInfo
+  ]
+
+fmap concat $ mapM (deriveJSON defaultOptions { fieldLabelModifier = API.snakeCase . dropWhile (not . isUpper) })
+  [ ''ImageInfo
+  , ''SearchResult
   ]
 
 all' :: (Functor f, HasAll c e) => (e -> f e) -> c -> f c
